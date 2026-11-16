@@ -1,0 +1,80 @@
+import time
+from datetime import datetime
+import requests
+
+DOMAIN = "raw." + "githubusercontent.com"
+URL = "https://" + DOMAIN + "/Baskerville42/outage-data-ua/main/data/kyiv.json"
+
+old_summary = None
+
+print("Мониторинг графиков света (Киев) запущен...")
+print("Чтобы остановить программу, нажмите Ctrl + C\n")
+
+try:
+    while True:
+        try:
+
+            response = requests.get(URL, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+
+
+            now = datetime.now()
+            hour_key = str(now.hour + 1)
+            minute = now.minute
+
+            fact_data = data.get("fact", {}).get("data", {})
+            if not fact_data:
+                print("Данных пока нет, жду 60 секунд...")
+                time.sleep(60)
+                continue
+
+
+            today_key = max(fact_data.keys(), key=int)
+            groups = fact_data[today_key]
+
+            groups_on = []
+            groups_off = []
+
+
+            for group_name, hours in groups.items():
+                if not isinstance(hours, dict):
+                    continue
+
+                clean_name = group_name.replace("GPV", "")
+                status = hours.get(hour_key, "yes")
+
+
+                is_off = False
+                if status == "no":
+                    is_off = True
+                elif status == "first" and minute < 30:
+                    is_off = True
+                elif status == "second" and minute >= 30:
+                    is_off = True
+
+                if is_off:
+                    groups_off.append(clean_name)
+                else:
+                    groups_on.append(clean_name)
+
+
+            total = len(groups_on) + len(groups_off)
+            if total > 0:
+                percent = round((len(groups_on) / total) * 100, 1)
+                current_summary = (groups_on, groups_off)
+
+                if current_summary != old_summary:
+                    time_str = now.strftime("%H:%M:%S")
+                    print(f"[{time_str}] В Киеве со светом {percent}% очередей")
+                    print(f"🟢 Со светом ({len(groups_on)}): {', '.join(groups_on)}")
+                    print(f"🔴 Без света ({len(groups_off)}): {', '.join(groups_off)}\n")
+                    old_summary = current_summary
+
+        except Exception as error:
+            print("Ошибка при проверке:", error)
+
+        time.sleep(60)
+
+except KeyboardInterrupt:
+    print("\nПрограмма остановлена.")
