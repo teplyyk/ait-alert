@@ -1,0 +1,702 @@
+from flask import Flask, render_template_string
+import folium
+from folium.plugins import MarkerCluster
+from branca.element import MacroElement
+from jinja2 import Template
+import requests
+import html
+import math
+
+app = Flask(__name__)
+
+
+BASE = "https://raw.githubusercontent.com/Astaryon/UA_geojson/main/"
+
+RAIONS_URL = BASE + "rayony.geojson"
+OBLASTS_URL = BASE + "regiony.geojson"
+
+FALLBACK_URL = (
+    "https://raw.githubusercontent.com/"
+    "darmat1/ukraine-geo-data/main/geodata/Ukraine.geojson"
+)
+
+SHELTERS_URL = (
+    "https://data.kyivcity.gov.ua/dataset/"
+    "dani-pro-roztashuvannia-zakhysnykh-sporud-tsyvilno/"
+    "resource/379a7295-22ae-4031-8aaf-2a5e7c8df178/data/download"
+)
+
+_cache = {}
+
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Карта України</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background: #111;
+            font-family: Arial, sans-serif;
+        }
+
+        .map-container {
+            width: 100%;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .map-container iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="map-container">
+        {{ map_html | safe }}
+    </div>
+</body>
+</html>
+"""
+
+
+MAP_CSS = """
+<style>
+    .leaflet-tooltip {
+        background: #172b40;
+        color: white;
+        border: 1px solid #5484b5;
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+    }
+
+    .geo-button {
+        background: #172b40;
+        color: white;
+        border: 1px solid #5484b5;
+        border-radius: 7px;
+        padding: 11px 14px;
+        font-size: 14px;
+        cursor: pointer;
+        box-shadow: 0 2px 8px #0008;
+    }
+
+    .geo-button:hover {
+        background: #254b70;
+    }
+
+    .geo-button:disabled {
+        opacity: 0.7;
+        cursor: wait;
+    }
+
+    .geo-result {
+        background: #172b40;
+        color: white;
+        padding: 10px;
+        border-radius: 7px;
+        margin-top: 7px;
+        max-width: 280px;
+        font-size: 13px;
+        line-height: 1.5;
+        box-shadow: 0 2px 8px #0008;
+    }
+</style>
+"""
+
+NAME_KEYS = [
+    "name", "NAME", "Name",
+    "name_uk", "name_ua", "NAME_UA",
+    "ADM2_UA", "ADM2_EN",
+    "ADM1_UA", "ADM1_EN",
+    "shapeName", "rayon", "raion",
+    "district", "region",
+    "NAME_2", "NAME_1"
+]
+
+KYIV_NAMES = {
+    "київ",
+    "м. київ",
+    "м.київ",
+    "місто київ",
+    "kyiv",
+    "kiev",
+    "kyiv city",
+    "kiev city",
+    "city of kyiv",
+    "city of kiev"
+}
+
+
+def load(url):
+    """Завантажує GeoJSON та зберігає його в кеші."""
+
+    if url not in _cache:
+        response = requests.get(url, timeout=90)
+        response.raise_for_status()
+
+        _cache[url] = response.json()
+
+    return _cache[url]
+
+
+def pick_name(properties, fallback):
+    """Шукає назву географічного об'єкта."""
+
+    for key in NAME_KEYS:
+        value = properties.get(key)
+
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    for value in properties.values():
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return fallback
+
+
+def add_labels(data, prefix):
+    """Додає кожному об'єкту поле label."""
+
+    for i, feature in enumerate(data.get("features", [])):
+        properties = feature.setdefault("properties", {})
+
+        properties["label"] = pick_name(
+            properties,
+            f"{prefix} {i + 1}"
+        )
+
+    return data
+
+
+def bbox_area(feature):
+    """Обчислює площу обмежувального прямокутника."""
+
+    xs = []
+    ys = []
+
+    def walk(coords):
+        if not coords:
+            return
+
+        if isinstance(coords[0], (int, float)):
+            xs.append(coords[0])
+            ys.append(coords[1])
+        else:
+            for item in coords:
+                walk(item)
+
+    geometry = feature.get("geometry") or {}
+    walk(geometry.get("coordinates", []))
+
+    if not xs or not ys:
+        return float("inf")
+
+    return (
+        (max(xs) - min(xs)) *
+        (max(ys) - min(ys))
+    )
+
+
+def find_kyiv_city(*datasets):
+    """Шукає саме місто Київ, а не Київську область."""
+
+    for data in datasets:
+        matches = []
+
+        for feature in data.get("features", []):
+            properties = feature.get("properties", {})
+
+            values = [
+                value.strip().lower()
+                for value in properties.values()
+                if isinstance(value, str)
+            ]
+
+            if any(value in KYIV_NAMES for value in values):
+                matches.append(feature)
+
+        if matches:
+            return min(matches, key=bbox_area)
+
+    return None
+
+def add_shelters(map_object, shelters_data):
+    """Додає укриття Києва на карту."""
+
+    cluster = MarkerCluster(
+        name="Укриття Києва",
+        options={
+            "chunkedLoading": True,
+            "maxClusterRadius": 50
+        }
+    )
+
+    valid_shelters = []
+
+    for feature in shelters_data.get("features", []):
+
+        geometry = feature.get("geometry") or {}
+
+        if geometry.get("type") != "Point":
+            continue
+
+        coordinates = geometry.get("coordinates", [])
+
+        if len(coordinates) < 2:
+            continue
+
+        lon, lat = coordinates[0], coordinates[1]
+
+        if not isinstance(lat, (int, float)):
+            continue
+
+        if not isinstance(lon, (int, float)):
+            continue
+
+        if not math.isfinite(lat) or not math.isfinite(lon):
+            continue
+        if not (50.1 <= lat <= 50.7 and 30.2 <= lon <= 30.9):
+            continue
+
+        properties = feature.get("properties") or {}
+
+        address = str(
+            properties.get("address") or "Адреса не вказана"
+        )
+
+        district = str(
+            properties.get("district") or "Район не вказаний"
+        )
+
+        working_time = str(
+            properties.get("working_time") or "Не вказано"
+        )
+
+        popup_html = f"""
+        <div style="font-family:Arial; min-width:180px;">
+            <b>Укриття</b>
+            <hr>
+            <b>Адреса:</b> {html.escape(address)}<br>
+            <b>Район:</b> {html.escape(district)}<br>
+            <b>Графік роботи:</b> {html.escape(working_time)}
+        </div>
+        """
+
+        folium.Marker(
+            location=[lat, lon],
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip="Укриття: " + address,
+            icon=folium.Icon(
+                color="green",
+                icon="home",
+                prefix="fa"
+            )
+        ).add_to(cluster)
+
+        valid_shelters.append({
+            "lat": lat,
+            "lon": lon,
+            "address": address,
+            "district": district
+        })
+
+    # Додаємо кластер на карту
+
+    cluster.add_to(map_object)
+
+    print("Укриттів додано на карту:", len(valid_shelters))
+
+    return valid_shelters
+
+class GeolocationControl(MacroElement):
+    """Кнопка визначення місцезнаходження та пошуку укриттів."""
+
+    def __init__(self, shelters):
+        super().__init__()
+
+        self._name = "GeolocationControl"
+        self.shelters = shelters
+
+        self._template = Template("""
+        {% macro script(this, kwargs) %}
+
+        var map = {{ this._parent.get_name() }};
+        var shelters = {{ this.shelters | tojson }};
+
+        var userMarker = null;
+
+        var nearestLayer = L.layerGroup().addTo(map);
+
+        var control = L.control({
+            position: "topright"
+        });
+
+        control.onAdd = function() {
+
+            var container = L.DomUtil.create(
+                "div",
+                "geo-control"
+            );
+
+            var button = L.DomUtil.create(
+                "button",
+                "geo-button",
+                container
+            );
+
+            button.type = "button";
+            button.innerHTML = "Знайти найближче укриття";
+
+            var result = L.DomUtil.create(
+                "div",
+                "geo-result",
+                container
+            );
+
+            result.style.display = "none";
+
+            L.DomEvent.disableClickPropagation(container);
+            L.DomEvent.disableScrollPropagation(container);
+
+            button.onclick = function() {
+
+                if (!navigator.geolocation) {
+                    result.style.display = "block";
+                    result.innerHTML =
+                        "Браузер не підтримує геолокацію.";
+                    return;
+                }
+
+                button.disabled = true;
+                button.innerHTML =
+                    "Визначаємо місцезнаходження...";
+
+                navigator.geolocation.getCurrentPosition(
+
+                    function(position) {
+
+                        var userLat = position.coords.latitude;
+                        var userLon = position.coords.longitude;
+
+                        var userLocation = [
+                            userLat,
+                            userLon
+                        ];
+
+                        if (userMarker) {
+                            map.removeLayer(userMarker);
+                        }
+
+                        nearestLayer.clearLayers();
+
+                        userMarker = L.marker(userLocation)
+                            .addTo(map)
+                            .bindPopup("Ваше місцезнаходження");
+
+                        userMarker.openPopup();
+
+                        map.setView(userLocation, 15);
+                        function distance(lat1, lon1, lat2, lon2) {
+
+                            var R = 6371;
+
+                            var dLat =
+                                (lat2 - lat1) * Math.PI / 180;
+
+                            var dLon =
+                                (lon2 - lon1) * Math.PI / 180;
+
+                            var a =
+                                Math.sin(dLat / 2) ** 2 +
+                                Math.cos(lat1 * Math.PI / 180) *
+                                Math.cos(lat2 * Math.PI / 180) *
+                                Math.sin(dLon / 2) ** 2;
+
+                            return 2 * R * Math.atan2(
+                                Math.sqrt(a),
+                                Math.sqrt(1 - a)
+                            );
+                        }
+
+                        var nearest = shelters.map(function(shelter) {
+
+                            return {
+                                shelter: shelter,
+
+                                distance: distance(
+                                    userLat,
+                                    userLon,
+                                    shelter.lat,
+                                    shelter.lon
+                                )
+                            };
+                        });
+
+                        nearest.sort(function(a, b) {
+                            return a.distance - b.distance;
+                        });
+
+                        nearest = nearest.slice(0, 3);
+
+                        var resultHTML =
+                            "<b>Найближчі укриття за відстанню по прямій:</b><br>";
+
+                        if (nearest.length === 0) {
+                            resultHTML +=
+                                "Не знайдено укриттів у завантажених даних.";
+                        }
+
+                        nearest.forEach(function(item, index) {
+
+                            var shelter = item.shelter;
+
+                            var marker = L.circleMarker(
+                                [shelter.lat, shelter.lon],
+                                {
+                                    radius: 9,
+                                    color: "#ffffff",
+                                    weight: 2,
+                                    fillColor: "#00cc66",
+                                    fillOpacity: 1
+                                }
+                            ).addTo(nearestLayer);
+
+                            marker.bindPopup(
+                                "<b>" + (index + 1) + ". Укриття</b><br>" +
+                                shelter.address + "<br>" +
+                                shelter.district + "<br>" +
+                                "Відстань по прямій: " +
+                                item.distance.toFixed(2) + " км"
+                            );
+
+                            resultHTML +=
+                                "<br><b>" + (index + 1) + ".</b> " +
+                                shelter.address +
+                                "<br>Район: " + shelter.district +
+                                "<br>По прямій: " +
+                                item.distance.toFixed(2) + " км<br>";
+                        });
+
+                        result.style.display = "block";
+                        result.innerHTML = resultHTML;
+
+                        button.disabled = false;
+                        button.innerHTML =
+                            "Оновити пошук укриттів";
+                    },
+
+                    function(error) {
+
+                        var message =
+                            "Не вдалося визначити місцезнаходження.";
+
+                        if (error.code === 1) {
+                            message =
+                                "Ви не надали дозвіл на геолокацію.";
+                        } else if (error.code === 2) {
+                            message =
+                                "Місцезнаходження недоступне.";
+                        } else if (error.code === 3) {
+                            message =
+                                "Час очікування геолокації минув.";
+                        }
+
+                        result.style.display = "block";
+                        result.innerHTML = message;
+
+                        button.disabled = false;
+                        button.innerHTML = "Спробувати ще раз";
+                    },
+
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 15000,
+                        maximumAge: 10000
+                    }
+                );
+            };
+
+            return container;
+        };
+
+        control.addTo(map);
+
+        {% endmacro %}
+        """)
+
+@app.route("/")
+def index():
+
+    raions = add_labels(
+        load(RAIONS_URL),
+        "Район"
+    )
+
+    oblasts = add_labels(
+        load(OBLASTS_URL),
+        "Область"
+    )
+
+    if not raions.get("features"):
+        raise ValueError("rayony.geojson не містить районів!")
+
+    print("Районів:", len(raions["features"]))
+    print("Областей:", len(oblasts.get("features", [])))
+
+
+    kyiv = find_kyiv_city(raions, oblasts)
+
+    if kyiv is None:
+        try:
+            fallback = add_labels(
+                load(FALLBACK_URL),
+                "Область"
+            )
+
+            kyiv = find_kyiv_city(fallback)
+
+        except requests.RequestException as exc:
+            print("Запасне джерело недоступне:", exc)
+
+    if kyiv is None:
+        print("УВАГА: м. Київ не знайдено!")
+
+
+    shelters_data = load(SHELTERS_URL)
+
+    print(
+        "Отримано об'єктів укриттів:",
+        len(shelters_data.get("features", []))
+    )
+
+    ukraine_map = folium.Map(
+        location=[50.4501, 30.5234],
+        zoom_start=10,
+        tiles=None,
+        width="100%",
+        height="100%",
+        min_zoom=5,
+        max_zoom=19,
+        scrollWheelZoom=True,
+        control_scale=True,
+        zoomSnap=0.5
+    )
+
+    folium.TileLayer(
+        tiles="OpenStreetMap",
+        name="Карта вулиць",
+        max_zoom=19,
+        control=True
+    ).add_to(ukraine_map)
+
+    ukraine_map.get_root().header.add_child(
+        folium.Element(MAP_CSS)
+    )
+
+    folium.GeoJson(
+        raions,
+        name="Райони",
+        style_function=lambda feature: {
+            "fillColor": "#1b3a5c",
+            "color": "#5d86b3",
+            "weight": 0.8,
+            "fillOpacity": 0.08
+        },
+        highlight_function=lambda feature: {
+            "fillColor": "#ffff00",
+            "color": "#ffffff",
+            "weight": 2,
+            "fillOpacity": 0.2
+        },
+        tooltip=folium.GeoJsonTooltip(
+            fields=["label"],
+            aliases=["Район:"]
+        )
+    ).add_to(ukraine_map)
+
+    if kyiv is not None:
+
+        kyiv = dict(kyiv)
+
+        kyiv["properties"] = dict(
+            kyiv.get("properties", {}),
+            label="м. Київ"
+        )
+
+        folium.GeoJson(
+            {
+                "type": "FeatureCollection",
+                "features": [kyiv]
+            },
+            name="м. Київ",
+            style_function=lambda feature: {
+                "fillColor": "#2a6f97",
+                "color": "#ffffff",
+                "weight": 1.5,
+                "fillOpacity": 0.15
+            },
+            highlight_function=lambda feature: {
+                "fillColor": "#ffff00",
+                "color": "#ffffff",
+                "weight": 2.5,
+                "fillOpacity": 0.3
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=["label"],
+                aliases=["Місто:"]
+            )
+        ).add_to(ukraine_map)
+
+    folium.GeoJson(
+        oblasts,
+        name="Області",
+        style_function=lambda feature: {
+            "fill": False,
+            "color": "#ffffff",
+            "weight": 2
+        },
+        interactive=False
+    ).add_to(ukraine_map)
+
+
+    shelters = add_shelters(
+        ukraine_map,
+        shelters_data
+    )
+    geo_control = GeolocationControl(shelters)
+
+    geo_control.add_to(ukraine_map)
+
+    folium.LayerControl(
+        collapsed=True
+    ).add_to(ukraine_map)
+
+    # Генерація HTML карти
+
+    map_html = ukraine_map._repr_html_()
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        map_html=map_html
+    )
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
