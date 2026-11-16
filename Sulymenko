@@ -1,8 +1,6 @@
-
 from flask import Flask, render_template_string
 import folium
 import requests
-import random
 
 app = Flask(__name__)
 
@@ -17,6 +15,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
 
     <title>Карта України</title>
 
@@ -28,7 +27,10 @@ HTML_TEMPLATE = """
         html, body {
             margin: 0;
             padding: 0;
+            width: 100%;
+            height: 100%;
             background: #000000 !important;
+            color-scheme: dark;
             font-family: Arial, sans-serif;
         }
 
@@ -44,6 +46,8 @@ HTML_TEMPLATE = """
             height: 100%;
             border: none;
             display: block;
+            background: #000000;
+            color-scheme: dark;
         }
     </style>
 </head>
@@ -56,15 +60,28 @@ HTML_TEMPLATE = """
 </html>
 """
 
+# CSS, який потрапляє всередину самої карти (в iframe folium)
+MAP_DARK_CSS = """
+<style>
+    html, body {
+        background: #000000 !important;
+        margin: 0;
+        padding: 0;
+    }
+    .folium-map,
+    .leaflet-container {
+        background: #000000 !important;
+    }
+</style>
+"""
+
 
 @app.route("/")
 def index():
-
     response = requests.get(GEOJSON_URL, timeout=30)
     response.raise_for_status()
 
     geojson_data = response.json()
-
     features = geojson_data.get("features", [])
 
     if not features:
@@ -81,39 +98,29 @@ def index():
         min_zoom=4,
         max_zoom=7,
         scrollWheelZoom=False,
-        control_scale=False
+        control_scale=False,
     )
 
-    # Палітра кольорів
+    # Чорний фон всередині самої карти
+    ukraine_map.get_root().header.add_child(folium.Element(MAP_DARK_CSS))
+
     colors = [
-        '#3388ff',
-        '#33a02c',
-        '#ff7f00',
-        '#6a3d9a',
-        '#e31a1c',
-        '#b15928',
-        '#1f78b4',
-        '#a6cee3',
-        '#fb9a99',
-        '#b2df8a'
+        "#3388ff", "#33a02c", "#ff7f00", "#6a3d9a", "#e31a1c",
+        "#b15928", "#1f78b4", "#a6cee3", "#fb9a99", "#b2df8a",
     ]
 
     color_by_name = {}
-
     for i, feature in enumerate(features):
-        name = feature["properties"].get(
-            "name", f"Область {i + 1}"
-        )
+        name = feature["properties"].get("name", f"Область {i + 1}")
         color_by_name[name] = colors[i % len(colors)]
 
     def style_function(feature):
         name = feature["properties"].get("name", "")
-
         return {
             "fillColor": color_by_name.get(name, "#3388ff"),
             "color": "#111111",
             "weight": 2,
-            "fillOpacity": 0.9
+            "fillOpacity": 0.9,
         }
 
     def highlight_function(feature):
@@ -121,7 +128,7 @@ def index():
             "fillColor": "#ffff00",
             "color": "#ffffff",
             "weight": 3,
-            "fillOpacity": 1
+            "fillOpacity": 1,
         }
 
     geojson_layer = folium.GeoJson(
@@ -131,21 +138,15 @@ def index():
         highlight_function=highlight_function,
         tooltip=folium.GeoJsonTooltip(
             fields=["name"],
-            aliases=["Область:"]
-        )
+            aliases=["Область:"],
+        ),
     )
-
     geojson_layer.add_to(ukraine_map)
 
     bounds = geojson_layer.get_bounds()
-
     print("Межі карти:", bounds)
 
-    ukraine_map.fit_bounds(
-        bounds,
-        padding=(40, 40),
-        max_zoom=6
-    )
+    ukraine_map.fit_bounds(bounds, padding=(40, 40), max_zoom=6)
 
     ukraine_map.options["maxZoom"] = 7
     ukraine_map.options["minZoom"] = 4
@@ -153,12 +154,8 @@ def index():
 
     map_html = ukraine_map._repr_html_()
 
-    return render_template_string(
-        HTML_TEMPLATE,
-        map_html=map_html
-    )
+    return render_template_string(HTML_TEMPLATE, map_html=map_html)
 
 
 if __name__ == "__main__":
     app.run(debug=True)
-
