@@ -1,8 +1,6 @@
 from flask import Flask, render_template_string
 import folium
 import requests
-from accessibility import add_accessibility_layer
-from outages import add_outages_layer
 
 app = Flask(__name__)
 
@@ -149,17 +147,6 @@ def index():
     print("Межі карти:", bounds)
 
     ukraine_map.fit_bounds(bounds, padding=(40, 40), max_zoom=6)
-
-    # Додаємо шар безбар'єрності
-    add_accessibility_layer(ukraine_map)
-
-    # Додаємо шар відключень світла
-    add_outages_layer(ukraine_map, geojson_data)
-
-    # Перемикач шарів
-    folium.LayerControl(
-        collapsed=False
-    ).add_to(ukraine_map)
 
     ukraine_map.options["maxZoom"] = 7
     ukraine_map.options["minZoom"] = 4
