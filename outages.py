@@ -9,49 +9,61 @@ API_URL = "https://svitlopulse.andrewboyko.name/api/v1/oblasts"
 
 # Зіставлення slug API з назвами у GeoJSON
 OBLAST_NAMES = {
-    "vinnytsia-oblast": ["Вінницька область", "Vinnytsia Oblast"],
-    "volyn-oblast": ["Волинська область", "Volyn Oblast"],
-    "luhansk-oblast": ["Луганська область", "Luhansk Oblast"],
+    "vinnytsia-oblast": ["Вінницька область", "Vinnytsia Oblast", "Vinnytsia", "Vinnytska"],
+    "volyn-oblast": ["Волинська область", "Volyn Oblast", "Volyn", "Volynska"],
+    "luhansk-oblast": ["Луганська область", "Luhansk Oblast", "Luhansk", "Luhanska"],
     "dnipropetrovsk-oblast": [
         "Дніпропетровська область",
         "Dnipropetrovsk Oblast",
-        "Dnipropetrovsk"
+        "Dnipropetrovsk",
+        "Dnipropetrovska",
+        "Dnipro",
     ],
-    "donetsk-oblast": ["Донецька область", "Donetsk Oblast"],
-    "zhytomyr-oblast": ["Житомирська область", "Zhytomyr Oblast"],
+    "donetsk-oblast": ["Донецька область", "Donetsk Oblast", "Donetsk", "Donetska"],
+    "zhytomyr-oblast": ["Житомирська область", "Zhytomyr Oblast", "Zhytomyr", "Zhytomyrska"],
     "zakarpattia-oblast": [
         "Закарпатська область",
-        "Zakarpattia Oblast"
+        "Zakarpattia Oblast",
+        "Zakarpattia",
+        "Zakarpatska",
     ],
     "zaporizhzhia-oblast": [
         "Запорізька область",
-        "Zaporizhzhia Oblast"
+        "Zaporizhzhia Oblast",
+        "Zaporizhzhia",
+        "Zaporizka",
     ],
     "ivano-frankivsk-oblast": [
         "Івано-Франківська область",
-        "Ivano-Frankivsk Oblast"
+        "Ivano-Frankivsk Oblast",
+        "Ivano-Frankivsk",
+        "Ivano-Frankivska",
     ],
-    "kyiv-oblast": ["Київська область", "Kyiv Oblast"],
+    "kyiv-oblast": ["Київська область", "Kyiv Oblast", "Kyivska"],
     "kirovohrad-oblast": [
         "Кіровоградська область",
-        "Kirovohrad Oblast"
+        "Kirovohrad Oblast",
+        "Kirovohrad",
+        "Kirovohradska",
     ],
-    "lviv-oblast": ["Львівська область", "Lviv Oblast"],
-    "mykolaiv-oblast": ["Миколаївська область", "Mykolaiv Oblast"],
-    "odesa-oblast": ["Одеська область", "Odesa Oblast"],
-    "poltava-oblast": ["Полтавська область", "Poltava Oblast"],
-    "rivne-oblast": ["Рівненська область", "Rivne Oblast"],
-    "sumy-oblast": ["Сумська область", "Sumy Oblast"],
-    "ternopil-oblast": ["Тернопільська область", "Ternopil Oblast"],
-    "kharkiv-oblast": ["Харківська область", "Kharkiv Oblast"],
-    "kherson-oblast": ["Херсонська область", "Kherson Oblast"],
+    "lviv-oblast": ["Львівська область", "Lviv Oblast", "Lviv", "Lvivska"],
+    "mykolaiv-oblast": ["Миколаївська область", "Mykolaiv Oblast", "Mykolaiv", "Mykolaivska"],
+    "odesa-oblast": ["Одеська область", "Odesa Oblast", "Odesa", "Odeska"],
+    "poltava-oblast": ["Полтавська область", "Poltava Oblast", "Poltava", "Poltavska"],
+    "rivne-oblast": ["Рівненська область", "Rivne Oblast", "Rivne", "Rivnenska"],
+    "sumy-oblast": ["Сумська область", "Sumy Oblast", "Sumy", "Sumska"],
+    "ternopil-oblast": ["Тернопільська область", "Ternopil Oblast", "Ternopil", "Ternopilska"],
+    "kharkiv-oblast": ["Харківська область", "Kharkiv Oblast", "Kharkiv", "Kharkivska"],
+    "kherson-oblast": ["Херсонська область", "Kherson Oblast", "Kherson", "Khersonska"],
     "khmelnytskyi-oblast": [
         "Хмельницька область",
-        "Khmelnytskyi Oblast"
+        "Khmelnytskyi Oblast",
+        "Khmelnytskyi",
+        "Khmelnytska",
     ],
-    "cherkasy-oblast": ["Черкаська область", "Cherkasy Oblast"],
-    "chernihiv-oblast": ["Чернігівська область", "Chernihiv Oblast"],
-    "chernivtsi-oblast": ["Чернівецька область", "Chernivtsi Oblast"],
+    "cherkasy-oblast": ["Черкаська область", "Cherkasy Oblast", "Cherkasy", "Cherkaska"],
+    "chernihiv-oblast": ["Чернігівська область", "Chernihiv Oblast", "Chernihiv", "Chernihivska"],
+    "chernivtsi-oblast": ["Чернівецька область", "Chernivtsi Oblast", "Chernivtsi", "Chernivetska"],
     "kyiv-city": ["Київ", "Kyiv", "Kyiv City"],
     "crimea": ["Автономна Республіка Крим", "Crimea"],
     "sevastopol": ["Севастополь", "Sevastopol"]
@@ -117,7 +129,7 @@ def add_outages_layer(map_object, geojson_data):
 
     if not oblasts:
         print("Немає даних про відключення")
-        return map_object
+        oblasts = []
 
     # Створюємо копію, щоб не змінювати оригінальний GeoJSON
     geojson_copy = copy.deepcopy(geojson_data)
@@ -131,8 +143,9 @@ def add_outages_layer(map_object, geojson_data):
 
     # Зберігаємо статуси за slug
     status_by_slug = {
-        oblast["slug"]: oblast
+        oblast.get("slug"): oblast
         for oblast in oblasts
+        if isinstance(oblast, dict) and oblast.get("slug")
     }
 
     matched = set()
@@ -218,7 +231,7 @@ def add_outages_layer(map_object, geojson_data):
     # Окремий шар відключень
     layer = folium.FeatureGroup(
         name="Відключення світла",
-        show=False
+        show=True
     )
 
     folium.GeoJson(

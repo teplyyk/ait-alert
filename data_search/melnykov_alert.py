@@ -4,11 +4,8 @@ import requests
 PRIMARY_URL = "https://vadimklimenko.com" + "/map/statuses.json"
 BACKUP_URL = "https://ubilling.net.ua" + "/aerialalerts/"
 
-old_states = {}
-first_run = True
-
-
 def get_alerts_data():
+    """Return active regions from the primary or backup alert source."""
     try:
         res = requests.get(PRIMARY_URL, timeout=8)
         res.raise_for_status()
@@ -37,32 +34,41 @@ def get_alerts_data():
         return result
 
 
-print("Надежный мониторинг запущен...")
-print("Чтобы остановить программу, нажмите Ctrl + C\n")
+def monitor_alerts():
+    """Print alert changes when running as a standalone monitor."""
+    old_states = {}
+    first_run = True
 
-try:
-    while True:
-        try:
-            current_states = get_alerts_data()
+    print("Надійний моніторинг запущено...")
+    print("Щоб зупинити програму, натисніть Ctrl + C\n")
 
-            for region, status in current_states.items():
-                if old_states.get(region) != status:
-                    print(f"{status} — {region}")
+    try:
+        while True:
+            try:
+                current_states = get_alerts_data()
 
-            for region in old_states:
-                if region not in current_states:
-                    print(f"🟢 ОТБОЙ — {region}")
+                for region, status in current_states.items():
+                    if old_states.get(region) != status:
+                        print(f"{status} — {region}")
 
-            if not current_states and (first_run or old_states):
-                print("Сейчас тревог по стране нет.")
+                for region in old_states:
+                    if region not in current_states:
+                        print(f"🟢 ВІДБІЙ — {region}")
 
-            old_states = current_states
-            first_run = False
+                if not current_states and (first_run or old_states):
+                    print("Зараз тривог по країні немає.")
 
-        except Exception as error:
-            print("Оба сервера временно недоступны, жду 15 сек:", error)
+                old_states = current_states
+                first_run = False
 
-        time.sleep(15)
+            except Exception as error:
+                print("Обидва сервери тимчасово недоступні, чекаю 15 сек:", error)
 
-except KeyboardInterrupt:
-    print("\nПрограмма остановлена.")
+            time.sleep(15)
+
+    except KeyboardInterrupt:
+        print("\nПрограму зупинено.")
+
+
+if __name__ == "__main__":
+    monitor_alerts()
