@@ -6,7 +6,7 @@ import unicodedata
 from accessibility import add_accessibility_layer
 from data_search.melnykov_alert import get_alerts_data
 from melnikov_light import get_kyiv_queue_status
-from outages import add_outages_layer
+from outages import add_outages_layer, get_place_details
 
 app = Flask(__name__)
 
@@ -236,13 +236,74 @@ MAP_PAGE_TEMPLATE = """
     <aside class="summary">
         <strong>Київські черги · дані на {{ kyiv_status.updated_at }}</strong>
         <span class="percent">Зі світлом {{ kyiv_status.percent_on }}% черг</span><br>
-        Зі світлом: {{ kyiv_status.groups_on | join(", ") or "—" }}<br>
-        Без світла: {{ kyiv_status.groups_off | join(", ") or "—" }}
+        Зі світлом: {{ kyiv_status.groups_on | length }} черг ·
+        без світла: {{ kyiv_status.groups_off | length }} черг
     </aside>
     {% elif show_kyiv_status %}
     <aside class="summary">Дані про графік черг Києва тимчасово недоступні.</aside>
     {% endif %}
     <div class="map-container">{{ map_html | safe }}</div>
+</body>
+</html>
+"""
+
+POWER_PLACE_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>{{ place.name_uk or place.name_en or "Черги" }} — Світло</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; background: #080b10; color: #f4f7fb; font-family: Arial, sans-serif; }
+        header { padding: 20px 24px; background: #0c131b; border-bottom: 1px solid #263746; }
+        a { color: #8ec8ea; text-decoration: none; font-weight: 700; }
+        main { max-width: 980px; margin: 0 auto; padding: 28px 20px 48px; }
+        h1 { margin: 22px 0 8px; }
+        .summary { color: #aebdca; margin: 0 0 22px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+        .queue { padding: 14px; border: 1px solid #35424d; border-radius: 12px; background: #131c25; }
+        .queue strong { display: block; font-size: 17px; margin-bottom: 6px; }
+        .queue span { font-size: 13px; }
+        .queue small { display: block; margin-top: 8px; color: #aebdca; }
+        .off { border-color: #a94949; }
+        .off span { color: #ff8888; }
+        .on span { color: #84d79c; }
+        .maybe span { color: #ffd16f; }
+        .unknown span { color: #aebdca; }
+        .empty, .error { padding: 18px; border: 1px solid #35424d; border-radius: 12px; color: #c2ccd5; }
+        @media (max-width: 560px) { header { padding: 16px; } main { padding: 20px 14px; } }
+    </style>
+</head>
+<body>
+    <header><a href="/power">← Повернутися до карти світла</a></header>
+    <main>
+        {% if error %}
+        <section class="error">{{ error }}</section>
+        {% else %}
+        <h1>{{ place.name_uk or place.name_en or "Населений пункт" }}</h1>
+        <p class="summary">
+            {% if place.stale %}Дані застаріли{% elif place.groups %}
+                Зараз без світла {{ place.groups_off or 0 }} із {{ place.groups }} черг
+            {% else %}Немає актуальних даних про черги{% endif %}
+        </p>
+        {% if groups %}
+        <section class="grid" aria-label="Статус черг">
+            {% for group in groups %}
+            <article class="queue {{ group.css }}">
+                <strong>Черга {{ group.name }}</strong>
+                <span>{{ group.label }}</span>
+                {% if group.detail %}<small>{{ group.detail }}</small>{% endif %}
+            </article>
+            {% endfor %}
+        </section>
+        {% else %}
+        <section class="empty">Для цього населеного пункту джерело не повертає список окремих черг.</section>
+        {% endif %}
+        {% endif %}
+    </main>
 </body>
 </html>
 """
@@ -443,9 +504,71 @@ def power_map():
     return render_map_page(
         ukraine_map,
         "Світло",
-        "Статус електропостачання по областях та графік черг Києва.",
+        "Статус у містах і населених пунктах. Натисніть точку, щоб побачити черги.",
         kyiv_status=kyiv_status,
         show_kyiv_status=True,
+    )
+
+
+@app.route("/power/place/<slug>")
+def power_place_detail(slug):
+    try:
+        data = get_place_details(slug)
+    except requests.RequestException as error:
+        print("Не вдалося отримати черги населеного пункту:", error)
+        return render_template_string(
+            POWER_PLACE_TEMPLATE,
+            place={},
+            groups=[],
+            error="Не вдалося завантажити статус черг. Спробуйте ще раз пізніше.",
+        ), 503
+
+    place = data.get("place") or {}
+    status_labels = {
+        "on": ("Світло є", "on"),
+        "off": ("Без світла", "off"),
+        "maybe": ("Можливе відключення", "maybe"),
+        "unknown": ("Немає даних", "unknown"),
+    }
+    groups = []
+
+    for item in data.get("groups", []):
+        if not isinstance(item, dict):
+            continue
+
+        state = str(item.get("state", "unknown"))
+        label, css_class = status_labels.get(
+            state,
+            ("Немає даних", "unknown"),
+        )
+        restore_at = item.get("restore_at")
+        next_at = item.get("next_at")
+        next_state = item.get("next_state")
+
+        if restore_at:
+            time_text = str(restore_at).split("T")[-1][:5]
+            detail = f"Відновлення за графіком о {time_text}"
+        elif next_at:
+            time_text = str(next_at).split("T")[-1][:5]
+            next_label = "відключення" if next_state == "off" else "зміна статусу"
+            detail = f"Наступне {next_label} о {time_text}"
+        else:
+            detail = ""
+
+        groups.append({
+            "name": item.get("group") or item.get("key", "—"),
+            "label": label,
+            "css": css_class,
+            "detail": detail,
+        })
+
+    groups.sort(key=lambda group: str(group["name"]))
+
+    return render_template_string(
+        POWER_PLACE_TEMPLATE,
+        place=place,
+        groups=groups,
+        error=None,
     )
 
 
