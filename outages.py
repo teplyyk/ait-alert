@@ -216,7 +216,7 @@ def add_outages_layer(map_object, geojson_data):
             "fillColor": color,
             "color": "#111111",
             "weight": 2,
-            "fillOpacity": 0.85
+            "fillOpacity": 0.42
         }
 
     # Підсвічування при наведенні
@@ -225,7 +225,7 @@ def add_outages_layer(map_object, geojson_data):
         return {
             "color": "#ffffff",
             "weight": 3,
-            "fillOpacity": 1
+            "fillOpacity": 0.55
         }
 
     # Окремий шар відключень
@@ -234,7 +234,7 @@ def add_outages_layer(map_object, geojson_data):
         show=True
     )
 
-    folium.GeoJson(
+    geojson_layer = folium.GeoJson(
         geojson_copy,
         name="Статус електропостачання",
         style_function=style_function,
@@ -259,9 +259,14 @@ def add_outages_layer(map_object, geojson_data):
                 "Актуальність:"
             ]
         )
-    ).add_to(layer)
+    )
+    geojson_layer.add_to(layer)
 
     layer.add_to(map_object)
+
+    bounds = geojson_layer.get_bounds()
+    if bounds and bounds[0] and bounds[1]:
+        map_object.fit_bounds(bounds, padding=(40, 40), max_zoom=6)
 
     print(
         f"Областей зіставлено: {len(matched)} "

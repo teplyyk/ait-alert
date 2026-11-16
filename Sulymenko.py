@@ -259,22 +259,34 @@ MAP_DARK_CSS = """
     .leaflet-container {
         background: #000000 !important;
     }
+    .leaflet-tile-pane {
+        filter: grayscale(1) invert(1) brightness(0.82) contrast(0.92);
+    }
+    .leaflet-control-attribution {
+        background: rgba(0, 0, 0, 0.78) !important;
+        color: #dddddd !important;
+    }
+    .leaflet-control-attribution a {
+        color: #b9d8ef !important;
+    }
 </style>
 """
 
 
-def create_tiled_map():
-    return folium.Map(
+def create_ukraine_map(with_streets=False):
+    ukraine_map = folium.Map(
         location=[48.5, 31.2],
         zoom_start=5,
-        tiles="OpenStreetMap",
+        tiles="OpenStreetMap" if with_streets else None,
         width="100%",
         height="100%",
         min_zoom=4,
-        max_zoom=18,
-        scrollWheelZoom=True,
-        control_scale=True,
+        max_zoom=19 if with_streets else 7,
+        scrollWheelZoom=with_streets,
+        control_scale=with_streets,
     )
+    ukraine_map.get_root().header.add_child(folium.Element(MAP_DARK_CSS))
+    return ukraine_map
 
 
 def render_map_page(map_object, title, subtitle, kyiv_status=None, show_kyiv_status=False):
@@ -295,9 +307,39 @@ def home():
 
 @app.route("/services")
 def services_map():
-    ukraine_map = create_tiled_map()
+    response = requests.get(GEOJSON_URL, timeout=30)
+    response.raise_for_status()
+    geojson_data = response.json()
+    features = geojson_data.get("features", [])
+    if not features:
+        raise ValueError("GeoJSON не містить областей!")
+
+    ukraine_map = create_ukraine_map(with_streets=True)
+    region_layer = folium.GeoJson(
+        geojson_data,
+        name="Області України",
+        style_function=lambda feature: {
+            "fillColor": DEFAULT_REGION_COLOR,
+            "color": "#111111",
+            "weight": 2,
+            "fillOpacity": 0.18,
+        },
+        highlight_function=lambda feature: {
+            "fillColor": DEFAULT_REGION_COLOR,
+            "color": "#ffffff",
+            "weight": 3,
+            "fillOpacity": 0.3,
+        },
+        tooltip=folium.GeoJsonTooltip(
+            fields=["name"],
+            aliases=["Область:"],
+        ),
+    )
+    region_layer.add_to(ukraine_map)
     add_accessibility_layer(ukraine_map)
     folium.LayerControl(collapsed=False).add_to(ukraine_map)
+    ukraine_map.fit_bounds(region_layer.get_bounds(), padding=(40, 40), max_zoom=6)
+    ukraine_map.options["maxZoom"] = 19
 
     return render_map_page(
         ukraine_map,
@@ -330,20 +372,7 @@ def alerts_map():
         for region, status in alert_data.items()
     }
 
-    ukraine_map = folium.Map(
-        location=[48.5, 31.2],
-        zoom_start=5,
-        tiles=None,
-        width="100%",
-        height="100%",
-        min_zoom=4,
-        max_zoom=7,
-        scrollWheelZoom=False,
-        control_scale=False,
-    )
-
-    # Чорний фон всередині самої карти
-    ukraine_map.get_root().header.add_child(folium.Element(MAP_DARK_CSS))
+    ukraine_map = create_ukraine_map()
 
     def region_color(feature):
         name = feature.get("properties", {}).get("name", "")
@@ -385,10 +414,6 @@ def alerts_map():
 
     ukraine_map.fit_bounds(bounds, padding=(40, 40), max_zoom=6)
 
-    ukraine_map.options["maxZoom"] = 7
-    ukraine_map.options["minZoom"] = 4
-    ukraine_map.options["scrollWheelZoom"] = False
-
     return render_map_page(
         ukraine_map,
         "Тривоги",
@@ -405,7 +430,7 @@ def power_map():
     if not geojson_data.get("features"):
         raise ValueError("GeoJSON не містить областей!")
 
-    ukraine_map = create_tiled_map()
+    ukraine_map = create_ukraine_map(with_streets=True)
     add_outages_layer(ukraine_map, geojson_data)
     folium.LayerControl(collapsed=False).add_to(ukraine_map)
 
