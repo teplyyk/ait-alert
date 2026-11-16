@@ -1,6 +1,7 @@
 """Settlement and queue-level electricity status maps."""
 
 import html
+from datetime import datetime
 from urllib.parse import quote
 
 import folium
@@ -56,6 +57,97 @@ def get_outages():
     except (requests.RequestException, ValueError) as error:
         print(f"Помилка API населених пунктів: {error}")
         return []
+
+
+def get_power_source_status():
+    """Read the live outage summary and report its freshness for the home page."""
+    try:
+        response = requests.get(f"{API_BASE}/summary", timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("API не повернув зведення")
+    except (requests.RequestException, ValueError) as error:
+        print(f"Не вдалося перевірити джерело даних про світло: {error}")
+        return {
+            "available": False,
+            "status": "Джерело недоступне",
+            "status_class": "offline",
+            "updated_at": datetime.now().astimezone(),
+            "time_label": "Остання перевірка",
+            "summary": "Не вдалося отримати зведення про відключення.",
+        }
+
+    updated_at = data.get("at")
+    time_label = "Зріз даних"
+    if not updated_at:
+        updated_at = response.headers.get("Date") or datetime.now().astimezone()
+        time_label = "Перевірено"
+
+    summary = data.get("summary") or {}
+    groups_off = summary.get("groups_off")
+    affected_regions = summary.get("oblasts_affected")
+    if groups_off is not None:
+        if groups_off:
+            affected_text = (
+                f" у {affected_regions} областях"
+                if affected_regions is not None
+                else ""
+            )
+            summary_text = f"Відключення: {groups_off} черг{affected_text}."
+        else:
+            summary_text = "Зведення зараз не показує відключених черг."
+    else:
+        summary_text = "Статус електропостачання по чергах."
+
+    operators_total = data.get("operators_total")
+    operators_fresh = data.get("operators_fresh")
+    timestamp_is_old = False
+    if isinstance(updated_at, str):
+        try:
+            parsed_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            if parsed_time.tzinfo is None:
+                parsed_time = parsed_time.astimezone()
+            age_minutes = (
+                datetime.now().astimezone() - parsed_time.astimezone()
+            ).total_seconds() / 60
+            timestamp_is_old = age_minutes > 10
+        except ValueError:
+            pass
+
+    if data.get("demo"):
+        status, status_class = "Демонстраційні дані", "warning"
+    elif timestamp_is_old:
+        status, status_class = "Дані застаріли", "warning"
+    elif data.get("fact_enabled") is False:
+        status, status_class = "Фактичні дані вимкнені", "warning"
+    elif (
+        isinstance(operators_total, int)
+        and operators_total > 0
+        and isinstance(operators_fresh, int)
+        and operators_fresh == 0
+    ):
+        status, status_class = "Дані застаріли", "warning"
+    elif (
+        isinstance(operators_total, int)
+        and isinstance(operators_fresh, int)
+        and operators_fresh < operators_total
+    ):
+        status, status_class = (
+            f"Оновлюється · {operators_fresh}/{operators_total} операторів",
+            "warning",
+        )
+    else:
+        status, status_class = "Дані актуальні", "ok"
+
+    return {
+        "available": True,
+        "status": status,
+        "status_class": status_class,
+        "updated_at": updated_at,
+        "time_label": time_label,
+        "summary": summary_text,
+    }
 
 
 def get_place_details(slug):

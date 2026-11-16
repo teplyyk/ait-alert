@@ -1,12 +1,16 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+
 from flask import Flask, render_template_string
 import folium
 import requests
 import unicodedata
 
-from accessibility import add_accessibility_layer
-from data_search.melnykov_alert import get_alerts_data
+from accessibility import add_accessibility_layer, get_accessibility_source_status
+from data_search.melnykov_alert import get_alerts_data, get_alerts_snapshot
 from melnikov_light import get_kyiv_queue_status
-from outages import add_outages_layer, get_place_details
+from outages import add_outages_layer, get_place_details, get_power_source_status
 
 app = Flask(__name__)
 
@@ -140,12 +144,15 @@ HOME_TEMPLATE = """
             font-family: Arial, sans-serif;
         }
         main { max-width: 1120px; margin: 0 auto; padding: 10vh 28px 48px; }
+        .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 380px); align-items: center; gap: 28px; }
+        .hero-art { display: flex; justify-content: center; align-items: center; min-width: 0; }
+        .hero-art img { display: block; width: 100%; max-width: 380px; height: auto; filter: drop-shadow(0 18px 35px rgba(36, 151, 194, .16)); }
         .eyebrow { color: #7fb5d8; font-size: 13px; letter-spacing: .18em; text-transform: uppercase; }
         h1 { margin: 12px 0; font-size: clamp(36px, 6vw, 64px); }
         .intro { max-width: 620px; color: #aebdca; font-size: 18px; line-height: 1.6; }
         .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 46px; }
         .card {
-            display: flex; min-height: 230px; flex-direction: column; padding: 25px;
+            display: flex; min-height: 290px; flex-direction: column; padding: 25px;
             border: 1px solid #263746; border-radius: 18px; background: #101923;
             color: inherit; text-decoration: none; transition: transform .18s, border-color .18s, background .18s;
         }
@@ -153,36 +160,70 @@ HOME_TEMPLATE = """
         .icon { font-size: 30px; }
         h2 { margin: 23px 0 8px; font-size: 23px; }
         .card p { margin: 0; color: #aebdca; line-height: 1.5; }
-        .open { margin-top: auto; padding-top: 22px; color: #8ec8ea; font-weight: 700; }
+        .source-info { margin-top: 18px; padding-top: 14px; border-top: 1px solid #263746; }
+        .source-status { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.4; font-weight: 700; }
+        .status-dot { flex: 0 0 9px; width: 9px; height: 9px; margin-top: 3px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
+        .ok { color: #70d69a; }
+        .warning { color: #ffd166; }
+        .offline { color: #ff7777; }
+        .local { color: #8ec8ea; }
+        .source-info .source-summary { margin-top: 7px; color: #d0d9e2; font-size: 13px; }
+        .source-time { margin-top: 7px; color: #94a4b2; font-size: 11px; line-height: 1.4; }
+        .open { margin-top: auto; padding-top: 20px; color: #8ec8ea; font-weight: 700; }
         @media (max-width: 760px) {
             main { padding: 48px 18px 30px; }
-            .cards { grid-template-columns: 1fr; margin-top: 30px; }
-            .card { min-height: 190px; }
+            .hero { grid-template-columns: 1fr; gap: 4px; }
+            .hero-art { width: min(310px, 88%); justify-self: center; }
+            .hero-art img { max-height: 185px; }
+            .cards { grid-template-columns: 1fr; margin-top: 14px; }
+            .card { min-height: 250px; }
         }
     </style>
 </head>
 <body>
     <main>
-        <div class="eyebrow">Інформаційні карти</div>
-        <h1>Україна зараз</h1>
-        <p class="intro">Оберіть карту, щоб переглянути дані про доступність, повітряні тривоги або електропостачання.</p>
+        <section class="hero">
+            <div class="hero-copy">
+                <div class="eyebrow">Інформаційні карти</div>
+                <h1>Україна зараз</h1>
+                <p class="intro">Оберіть карту, щоб переглянути дані про доступність, повітряні тривоги або електропостачання.</p>
+            </div>
+            <div class="hero-art" aria-hidden="true">
+                <img src="{{ url_for('static', filename='ukraine-emblem.svg') }}" alt="">
+            </div>
+        </section>
         <nav class="cards" aria-label="Карти">
             <a class="card" href="/services">
                 <span class="icon" aria-hidden="true">♿</span>
                 <h2>Сервіс</h2>
                 <p>Об'єкти безбар'єрності та доступності по Україні.</p>
+                <div class="source-info">
+                    <div class="source-status {{ services_status.status_class }}"><span class="status-dot"></span>{{ services_status.status }}</div>
+                    <p class="source-summary">{{ services_status.summary }}</p>
+                    <div class="source-time">{{ services_status.time_label }}: {{ services_status.updated_at }}</div>
+                </div>
                 <span class="open">Відкрити карту →</span>
             </a>
             <a class="card" href="/alerts">
                 <span class="icon" aria-hidden="true">◉</span>
                 <h2>Тривоги</h2>
                 <p>Поточні тривоги по областях України.</p>
+                <div class="source-info">
+                    <div class="source-status {{ alerts_status.status_class }}"><span class="status-dot"></span>{{ alerts_status.status }}</div>
+                    <p class="source-summary">{{ alerts_status.summary }}</p>
+                    <div class="source-time">{{ alerts_status.time_label }}: {{ alerts_status.updated_at }}</div>
+                </div>
                 <span class="open">Відкрити карту →</span>
             </a>
             <a class="card" href="/power">
                 <span class="icon" aria-hidden="true">⚡</span>
                 <h2>Світло</h2>
                 <p>Статус електропостачання та графік черг у Києві.</p>
+                <div class="source-info">
+                    <div class="source-status {{ power_status.status_class }}"><span class="status-dot"></span>{{ power_status.status }}</div>
+                    <p class="source-summary">{{ power_status.summary }}</p>
+                    <div class="source-time">{{ power_status.time_label }}: {{ power_status.updated_at }}</div>
+                </div>
                 <span class="open">Відкрити карту →</span>
             </a>
         </nav>
@@ -361,9 +402,64 @@ def render_map_page(map_object, title, subtitle, kyiv_status=None, show_kyiv_sta
     )
 
 
+def format_home_time(value):
+    if not value:
+        return "—"
+
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(text)
+            except (TypeError, ValueError, OverflowError):
+                return text
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone()
+    return parsed.strftime("%d.%m.%Y, %H:%M")
+
+
 @app.route("/")
 def home():
-    return render_template_string(HOME_TEMPLATE)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        alerts_future = executor.submit(get_alerts_snapshot)
+        power_future = executor.submit(get_power_source_status)
+        alerts = alerts_future.result()
+        power = power_future.result()
+
+    services = get_accessibility_source_status()
+    if alerts["available"]:
+        alert_count = len(alerts["alerts"])
+        alert_summary = (
+            f"Активних областей: {alert_count}."
+            if alert_count
+            else "Активних тривог не показано."
+        )
+    else:
+        alert_summary = "Не вдалося отримати поточний стан тривог."
+
+    def prepare_card(source, summary):
+        value = dict(source)
+        value["summary"] = summary
+        value.setdefault("status", value.get("source", "Дані недоступні"))
+        value.setdefault("status_class", "offline")
+        value["updated_at"] = format_home_time(value.get("updated_at"))
+        return value
+
+    services_status = prepare_card(services, services["summary"])
+    alerts_status = prepare_card(alerts, alert_summary)
+    power_status = prepare_card(power, power["summary"])
+
+    return render_template_string(
+        HOME_TEMPLATE,
+        services_status=services_status,
+        alerts_status=alerts_status,
+        power_status=power_status,
+    )
 
 
 @app.route("/services")

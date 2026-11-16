@@ -1,5 +1,6 @@
 import json
 import folium
+from datetime import datetime
 from pathlib import Path
 
 
@@ -28,6 +29,30 @@ TOOLTIP_FIELDS = (
     "addressPostName",
     "addressThoroughfare",
 )
+
+
+def get_accessibility_source_status():
+    """Return availability and local file modification time without loading the dataset."""
+    try:
+        modified = datetime.fromtimestamp(DATA_FILE.stat().st_mtime)
+    except OSError:
+        return {
+            "available": False,
+            "status": "Локальний файл не знайдено",
+            "status_class": "offline",
+            "updated_at": None,
+            "time_label": "Оновлення",
+            "summary": "Набір об'єктів доступності зараз недоступний.",
+        }
+
+    return {
+        "available": True,
+        "status": "Локальні дані доступні",
+        "status_class": "local",
+        "updated_at": modified,
+        "time_label": "Файл змінено",
+        "summary": "Об'єкти безбар'єрності та доступності по Україні.",
+    }
 
 
 def get_accessibility_data():
